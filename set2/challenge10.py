@@ -1,4 +1,3 @@
-from asyncore import read
 import base64
 import os
 import sys

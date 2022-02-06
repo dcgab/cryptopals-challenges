@@ -219,39 +219,64 @@ def uses_ecb(function: Callable[[bytes], bytes], block_size: int) -> bool:
 
     return len(block_input) != len(set(block_input))
 
+def find_ecb_attack_offset(oracle: Callable[[bytes], bytes]) -> Tuple[int, int]:
+    block_size_bytes = find_block_size(oracle) // 8
+    for i in range(0, block_size_bytes):
+        # Start with input with length of the block size * 2 and add bytes until two blocks are identical
+        # The added bytes is the offset and the block offset is the block we are comparing - 1
+        input = (b'B'*i) + (b'A'*(block_size_bytes*2))
+        output = oracle(input)
+
+        prev_block: bytes = b''
+        for j in range(0, len(output), block_size_bytes):
+            curr_block = output[j : j + block_size_bytes]
+            if (prev_block == curr_block) and (prev_block not in oracle(b'')):
+                return i, (j // block_size_bytes) - 1
+            prev_block = curr_block
+
 def recover_ECB_prepend_plaintext(oracle: Callable[[bytes], bytes]) -> bytes:
+    input_offset, block_offset = find_ecb_attack_offset(oracle)
+
     block_size = find_block_size(oracle)
     is_ecb = uses_ecb(oracle, block_size)
     recovered_plaintext: bytearray = bytearray()
     lookup: Dict[bytes, int] = {}
     block_size_bytes = block_size // 8
-    prefix_init = b'A'*block_size_bytes
+    prefix_offset = b'B'*input_offset
+    prefix_init =  b'A'*block_size_bytes
 
     for _ in range(len(oracle(b''))):
         # Calculate in which block to recover the byte 
-        lookup_block = len(recovered_plaintext) // block_size_bytes
+        lookup_block = (len(recovered_plaintext) // block_size_bytes) + block_offset
         # Calculate the length of the prefix
         prefix_length = (15 - len(recovered_plaintext)) % block_size_bytes
 
-        prefix = prefix_init[0:prefix_length]
+        prefix = prefix_offset + prefix_init[0:prefix_length]
 
         # Create a lookup table for all possible bytes
-        for i in range(0x100):
+        for i in range(0x80):
             # prefix + recovered_plaintext is always a multiple of the block size - 1
             input_block = prefix + recovered_plaintext + bytes([i])
             # get the encrypted block in which we apply our brute-force byte
-            encrypted_block = oracle(input_block)[lookup_block * 16:(lookup_block + 1) * 16]
+            encrypted_block = oracle(input_block)[lookup_block * block_size_bytes : (lookup_block + 1) * block_size_bytes]
+            # print(input_block.hex(), oracle(input_block).hex())
             # Save this block together with the plaintext byte
             lookup[encrypted_block] = i
 
         # Retrieve the plaintext byte using the lookup table
-        recovered_byte = lookup.get(oracle(prefix)[lookup_block * 16:(lookup_block + 1) * 16])
-        
+        recovered_byte = lookup.get(oracle(prefix)[lookup_block * block_size_bytes : (lookup_block + 1) * block_size_bytes])
         # Stop when no bytes are found
         if recovered_byte is None:
             break
 
-        recovered_plaintext.append(lookup.get(oracle(prefix)[lookup_block * 16:(lookup_block + 1) * 16]))
+        recovered_plaintext.append(recovered_byte)
         lookup.clear()
         
     return bytes(recovered_plaintext)
+
+def format_blocks(input: bytes, blocksize: int):
+    blocksize_bytes = blocksize // 8
+    sep = '---'
+    block_list = [input[i * blocksize_bytes : (i+1) * blocksize_bytes].hex() for i in range(0, len(input), blocksize_bytes)]
+    print(block_list)
+    return sep.join(block_list)
